@@ -350,7 +350,7 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 
 	/* Add X-Forwarded-For header based on clientip param. */
 	//apr_table_addn(req->headers_in, "X-Forwarded-For", modsec_addr2str(req->pool, &params->clientip));
-	req->useragent_ip = modsec_addr2str(req->pool, &params->clientip)))
+	req->useragent_ip = modsec_addr2str(req->pool, &params->clientip);
 	
 	/* Process special headers. */
 	req->range = apr_table_get(req->headers_in, "Range");
