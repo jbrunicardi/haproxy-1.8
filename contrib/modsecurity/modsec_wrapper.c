@@ -325,7 +325,16 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	/* Init processing */
 
 	cr = modsecNewConnection();
+	
 	req = modsecNewRequest(cr, modsec_config);
+	
+	/* Set clientip */
+	#if AP_SERVER_MAJORVERSION_NUMBER > 1 && AP_SERVER_MINORVERSION_NUMBER < 3
+		cr->remote_ip = modsec_addr2str(req->pool, &params->clientip);
+	#else
+		cr->client_ip = modsec_addr2str(req->pool, &params->clientip);
+    #endif
+	
 
 	/* Load request. */
 
@@ -350,7 +359,7 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 
 	/* Add X-Forwarded-For header based on clientip param. */
 	//apr_table_addn(req->headers_in, "X-Forwarded-For", modsec_addr2str(req->pool, &params->clientip));
-	req->useragent_ip = modsec_addr2str(req->pool, &params->clientip);
+	//req->useragent_ip = modsec_addr2str(req->pool, &params->clientip);
 	
 	/* Process special headers. */
 	req->range = apr_table_get(req->headers_in, "Range");
