@@ -18,6 +18,7 @@
 #include "spoa.h"
 
 struct modsecurity_parameters {
+	struct sample clientip;
 	struct sample uniqueid;
 	struct sample method;
 	struct sample path;

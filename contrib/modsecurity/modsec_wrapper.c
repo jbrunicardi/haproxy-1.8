@@ -198,6 +198,8 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	int ret;
 	char *buf;
 	char *end;
+	const char *clientip;
+	uint64_t clientip_len;
 	const char *uniqueid;
 	uint64_t uniqueid_len;
 	const char *meth;
@@ -216,6 +218,10 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	struct modsec_hdr hdr;
 	int status;
 	int return_code = -1;
+
+	/* Decode clientip. */
+	clientip = params->clientip.data.u.str.str;
+	clientip_len = params->clientip.data.u.str.len;
 
 	/* Decode uniqueid. */
 	uniqueid = params->uniqueid.data.u.str.str;
@@ -320,6 +326,9 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 		apr_table_setn(req->headers_in, name, value);
 	}
 
+	/* Add X-Forwarded-For header based on clientip param. */
+	apr_table_addn(req->headers_in, "X-Forwarded-For", clientip);
+	
 	/* Process special headers. */
 	req->range = apr_table_get(req->headers_in, "Range");
 	req->content_type = apr_table_get(req->headers_in, "Content-Type");
