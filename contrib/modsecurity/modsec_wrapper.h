@@ -15,6 +15,8 @@
 #ifndef __MODSEC_WRAPPER_H__
 #define __MODSEC_WRAPPER_H__
 
+#include <types/sample.h>
+
 #include "spoa.h"
 
 struct modsecurity_parameters {

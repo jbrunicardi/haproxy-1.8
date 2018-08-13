@@ -124,6 +124,34 @@ static char *printf_dup(struct request_rec *req, char *fmt, ...)
 	return out;
 }
 
+static char *modsec_addr2str(apr_pool_t *pool, struct sample *addr)
+{
+	sa_family_t family;
+	const void *src;
+	char *dst;
+
+	switch (addr->data.type) {
+	case SMP_T_IPV4:
+		src = &addr->data.u.ipv4;
+		family = AF_INET;
+		break;
+	case SMP_T_IPV6:
+		src = &addr->data.u.ipv6;
+		family = AF_INET6;
+		break;
+	default:
+		return NULL;
+	}
+
+	if (!(dst = apr_pcalloc(pool, INET6_ADDRSTRLEN + 1)))
+		return NULL;
+
+	if (inet_ntop(family, src, dst, INET6_ADDRSTRLEN))
+		return dst;
+
+	return NULL;
+}
+
 /* This function send logs. For now, it do nothing. */
 static void modsec_log(void *obj, int level, char *str)
 {
@@ -198,8 +226,6 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	int ret;
 	char *buf;
 	char *end;
-	const char *clientip;
-	uint64_t clientip_len;
 	const char *uniqueid;
 	uint64_t uniqueid_len;
 	const char *meth;
@@ -218,10 +244,6 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	struct modsec_hdr hdr;
 	int status;
 	int return_code = -1;
-
-	/* Decode clientip. */
-	clientip = params->clientip.data.u.str.str;
-	clientip_len = params->clientip.data.u.str.len;
 
 	/* Decode uniqueid. */
 	uniqueid = params->uniqueid.data.u.str.str;
@@ -327,7 +349,8 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	}
 
 	/* Add X-Forwarded-For header based on clientip param. */
-	apr_table_addn(req->headers_in, "X-Forwarded-For", clientip);
+	//apr_table_addn(req->headers_in, "X-Forwarded-For", modsec_addr2str(req->pool, &params->clientip));
+	req->useragent_ip = modsec_addr2str(req->pool, &params->clientip)))
 	
 	/* Process special headers. */
 	req->range = apr_table_get(req->headers_in, "Range");
