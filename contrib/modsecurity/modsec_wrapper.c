@@ -649,7 +649,10 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	/* Process request headers analysis. */
 	status = modsecProcessRequestHeaders(req);
 	if (status != DECLINED && status != DONE)
+	{
 		return_code = status;
+		goto fail;
+	}
 
 	/* Process request body analysis. */
 	status = modsecProcessRequestBody(req);
