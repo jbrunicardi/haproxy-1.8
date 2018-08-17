@@ -651,6 +651,7 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	if (status != DECLINED && status != DONE)
 	{
 		return_code = status;
+		fail = 0;
 		goto fail;
 	}
 
