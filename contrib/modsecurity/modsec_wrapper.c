@@ -122,6 +122,34 @@ static char *printf_dup(struct request_rec *req, char *fmt, ...)
 	return out;
 }
 
+static char *modsec_addr2str(apr_pool_t *pool, struct sample *addr)
+{
+	sa_family_t family;
+	const void *src;
+	char *dst;
+
+	switch (addr->data.type) {
+	case SMP_T_IPV4:
+		src = &addr->data.u.ipv4;
+		family = AF_INET;
+		break;
+	case SMP_T_IPV6:
+		src = &addr->data.u.ipv6;
+		family = AF_INET6;
+		break;
+	default:
+		return NULL;
+	}
+
+	if (!(dst = apr_pcalloc(pool, INET6_ADDRSTRLEN + 1)))
+		return NULL;
+
+	if (inet_ntop(family, src, dst, INET6_ADDRSTRLEN))
+		return dst;
+
+	return NULL;
+}
+
 /* This function send logs. For now, it do nothing. */
 static void modsec_log(void *obj, int level, char *str)
 {
@@ -296,6 +324,14 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 
 	cr = modsecNewConnection();
 	req = modsecNewRequest(cr, modsec_config);
+	
+	/* Set clientip */
+	#if AP_SERVER_MAJORVERSION_NUMBER > 1 && AP_SERVER_MINORVERSION_NUMBER < 3
+		cr->remote_ip = modsec_addr2str(req->pool, &params->clientip);
+	#else
+		cr->client_ip = modsec_addr2str(req->pool, &params->clientip);
+    #endif
+	
 
 	/* Load request. */
 
@@ -610,7 +646,11 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	/* Process request headers analysis. */
 	status = modsecProcessRequestHeaders(req);
 	if (status != DECLINED && status != DONE)
+	{
 		return_code = status;
+		fail = 0;
+		goto fail;
+	}
 
 	/* Process request body analysis. */
 	status = modsecProcessRequestBody(req);
