@@ -36,11 +36,16 @@
  * is, the end user is not meant to manipulate internals, so this is pointless.
  * The 'node.bit' value here works differently from scalar types, as it contains
  * the number of identical bits between the two branches.
+ * Note that we take a great care of making sure the key is located exactly at
+ * the end of the struct even if that involves holes before it, so that it
+ * always aliases any external key a user would append after. This is why the
+ * key uses the same alignment as the struct.
  */
 struct ebmb_node {
 	struct eb_node node; /* the tree node, must be at the beginning */
+	ALWAYS_ALIGN(sizeof(void*));
 	unsigned char key[0]; /* the key, its size depends on the application */
-};
+} ALIGNED(sizeof(void*));
 
 /*
  * Exported functions and macros.
@@ -123,7 +128,7 @@ static forceinline void __ebmb_delete(struct ebmb_node *ebmb)
 	__eb_delete(&ebmb->node);
 }
 
-/* Find the first occurence of a key of a least <len> bytes matching <x> in the
+/* Find the first occurrence of a key of a least <len> bytes matching <x> in the
  * tree <root>. The caller is responsible for ensuring that <len> will not exceed
  * the common parts between the tree's keys and <x>. In case of multiple matches,
  * the leftmost node is returned. This means that this function can be used to
@@ -176,7 +181,7 @@ static forceinline struct ebmb_node *__ebmb_lookup(struct eb_root *root, const v
 		 */
 		node_bit = ~node_bit + (pos << 3) + 8; // = (pos<<3) + (7 - node_bit)
 		if (node_bit < 0) {
-			/* This surprizing construction gives better performance
+			/* This surprising construction gives better performance
 			 * because gcc does not try to reorder the loop. Tested to
 			 * be fine with 2.95 to 4.2.
 			 */
@@ -371,7 +376,7 @@ __ebmb_insert(struct eb_root *root, struct ebmb_node *new, unsigned int len)
 }
 
 
-/* Find the first occurence of the longest prefix matching a key <x> in the
+/* Find the first occurrence of the longest prefix matching a key <x> in the
  * tree <root>. It's the caller's responsibility to ensure that key <x> is at
  * least as long as the keys in the tree. Note that this can be ensured by
  * having a byte at the end of <x> which cannot be part of any prefix, typically
@@ -465,7 +470,7 @@ static forceinline struct ebmb_node *__ebmb_lookup_longest(struct eb_root *root,
 }
 
 
-/* Find the first occurence of a prefix matching a key <x> of <pfx> BITS in the
+/* Find the first occurrence of a prefix matching a key <x> of <pfx> BITS in the
  * tree <root>. It's the caller's responsibility to ensure that key <x> is at
  * least as long as the keys in the tree. Note that this can be ensured by
  * having a byte at the end of <x> which cannot be part of any prefix, typically

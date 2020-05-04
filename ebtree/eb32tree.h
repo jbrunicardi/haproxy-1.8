@@ -41,8 +41,9 @@ typedef   signed int s32;
  */
 struct eb32_node {
 	struct eb_node node; /* the tree node, must be at the beginning */
+	MAYBE_ALIGN(sizeof(u32));
 	u32 key;
-};
+} ALIGNED(sizeof(void*));
 
 /*
  * Exported functions and macros.
@@ -129,7 +130,7 @@ static forceinline void __eb32_delete(struct eb32_node *eb32)
 }
 
 /*
- * Find the first occurence of a key in the tree <root>. If none can be
+ * Find the first occurrence of a key in the tree <root>. If none can be
  * found, return NULL.
  */
 static forceinline struct eb32_node *__eb32_lookup(struct eb_root *root, u32 x)
@@ -180,7 +181,7 @@ static forceinline struct eb32_node *__eb32_lookup(struct eb_root *root, u32 x)
 }
 
 /*
- * Find the first occurence of a signed key in the tree <root>. If none can
+ * Find the first occurrence of a signed key in the tree <root>. If none can
  * be found, return NULL.
  */
 static forceinline struct eb32_node *__eb32i_lookup(struct eb_root *root, s32 x)

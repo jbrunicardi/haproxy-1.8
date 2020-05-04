@@ -257,7 +257,7 @@ Description :
  - if a request does not contain a cookie, it will be forwarded to a valid
    server
  - in return, if a JESSIONID cookie is seen, the server name will be prefixed
-   into it, followed by a delimitor ('~')
+   into it, followed by a delimiter ('~')
  - when the client comes again with the cookie "JSESSIONID=A~xxx", LB1 will
    know that it must be forwarded to server A. The server name will then be
    extracted from cookie before it is sent to the server.
@@ -509,7 +509,7 @@ Since haproxy does not handle SSL, this part will have to be extracted from the
 servers (freeing even more resources) and installed on the load-balancer
 itself. Install haproxy and apache+mod_ssl on the old box which will spread the
 load between the new boxes. Apache will work in SSL reverse-proxy-cache. If the
-application is correctly developped, it might even lower its load. However,
+application is correctly developed, it might even lower its load. However,
 since there now is a cache between the clients and haproxy, some security
 measures must be taken to ensure that inserted cookies will not be cached.
 
@@ -1265,7 +1265,7 @@ S2L2. So only initial users will load the inter-site link, not the new ones.
 ===================
 
 Sometimes it may reveal useful to access servers from a pool of IP addresses
-instead of only one or two. Some equipments (NAT firewalls, load-balancers)
+instead of only one or two. Some equipment (NAT firewalls, load-balancers)
 are sensible to source address, and often need many sources to distribute the
 load evenly amongst their internal hash buckets.
 

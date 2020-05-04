@@ -38,11 +38,16 @@ typedef   signed long long s64;
  * eb_node so that it can be cast into an eb_node. We could also have put some
  * sort of transparent union here to reduce the indirection level, but the fact
  * is, the end user is not meant to manipulate internals, so this is pointless.
+ * In case sizeof(void*)>=sizeof(u64), we know there will be some padding after
+ * the key if it's unaligned. In this case we force the alignment on void* so
+ * that we prefer to have the padding before for more efficient accesses.
  */
 struct eb64_node {
 	struct eb_node node; /* the tree node, must be at the beginning */
+	MAYBE_ALIGN(sizeof(u64));
+	ALWAYS_ALIGN(sizeof(void*));
 	u64 key;
-};
+} ALIGNED(sizeof(void*));
 
 /*
  * Exported functions and macros.
@@ -129,7 +134,7 @@ static forceinline void __eb64_delete(struct eb64_node *eb64)
 }
 
 /*
- * Find the first occurence of a key in the tree <root>. If none can be
+ * Find the first occurrence of a key in the tree <root>. If none can be
  * found, return NULL.
  */
 static forceinline struct eb64_node *__eb64_lookup(struct eb_root *root, u64 x)
@@ -178,7 +183,7 @@ static forceinline struct eb64_node *__eb64_lookup(struct eb_root *root, u64 x)
 }
 
 /*
- * Find the first occurence of a signed key in the tree <root>. If none can
+ * Find the first occurrence of a signed key in the tree <root>. If none can
  * be found, return NULL.
  */
 static forceinline struct eb64_node *__eb64i_lookup(struct eb_root *root, s64 x)

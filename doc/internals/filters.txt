@@ -1,5 +1,5 @@
                    -----------------------------------------
-                          Filters Guide - version 1.8
+                          Filters Guide - version 2.1
                           ( Last update: 2017-07-27 )
                    ------------------------------------------
                           Author : Christopher Faulet
@@ -54,7 +54,7 @@ places, mainly around channel analyzers. Their purpose is to allow filters to
 be involved in the data processing, from the stream creation/destruction to
 the data forwarding. Depending of what it should do, a filter can implement all
 or part of these callbacks. For now, existing callbacks are focused on
-streams. But futur improvements could enlarge filters scope. For example, it
+streams. But future improvements could enlarge filters scope. For example, it
 could be useful to handle events at the connection level.
 
 In HAProxy configuration file, a filter is declared in a proxy section, except
@@ -84,7 +84,7 @@ filters are also chained, frontend ones called first. Even if the filters
 processing is serialized, each filter will bahave as it was alone (unless it was
 developed to be aware of other filters). For all that, some constraints are
 imposed to filters, especially when data exchanged between the client and the
-server are processed. We will dicuss again these contraints when we will tackle
+server are processed. We will discuss again these constraints when we will tackle
 the subject of writing a filter.
 
 
@@ -93,7 +93,7 @@ the subject of writing a filter.
 ---------------------
 
 To use a filter, you must use the parameter 'filter' followed by the filter name
-and, optionnaly, its configuration in the desired listen, frontend or backend
+and, optionally, its configuration in the desired listen, frontend or backend
 section. For example:
 
     listen test
@@ -122,16 +122,16 @@ The list of available filters is reported by 'haproxy -vv':
 Multiple filter lines can be used in a proxy section to chain filters. Filters
 will be called in the declaration order.
 
-Some filters can support implicit declarartions in certain circumstances
-(without the filter line). This is not recommanded for new features but are
+Some filters can support implicit declarations in certain circumstances
+(without the filter line). This is not recommended for new features but are
 useful for existing ones moved in a filter, for backward compatibility
-reasons. Implicit declarartions are supported when there is only one filter used
-on a proxy. When several filters are used, explicit declarartions are mandatory.
+reasons. Implicit declarations are supported when there is only one filter used
+on a proxy. When several filters are used, explicit declarations are mandatory.
 The HTTP compression filter is one of these filters. Alone, using 'compression'
 keywords is enough to use it. But when at least a second filter is used, a
 filter line must be added.
 
-    # filter line is optionnal
+    # filter line is optional
     listen t1
         bind *:80
         compression algo gzip
@@ -229,7 +229,7 @@ existing callbacks. Available callbacks are listed in the following structure:
                                     struct http_msg *msg);
         void (*http_reply)         (struct stream *s, struct filter *f,
                                     short status,
-                                    const struct chunk *msg);
+                                    const struct buffer *msg);
 
         /*
          * TCP callbacks
@@ -283,7 +283,7 @@ the structure 'stream', the field 'strm_flt' is the state of all filter
 instances attached to a stream:
 
     /*
-     * Structure reprensenting the "global" state of filters attached to a
+     * Structure representing the "global" state of filters attached to a
      * stream.
      */
     struct strm_flt {
@@ -293,8 +293,8 @@ instances attached to a stream:
                                              * If NULL, we start from the first filter.
                                              * 0: request channel, 1: response channel */
         unsigned short flags;               /* STRM_FL_* */
-        unsigned char  nb_req_data_filters; /* Number of data filters registerd on the request channel */
-        unsigned char  nb_rsp_data_filters; /* Number of data filters registerd on the response channel */
+        unsigned char  nb_req_data_filters; /* Number of data filters registered on the request channel */
+        unsigned char  nb_rsp_data_filters; /* Number of data filters registered on the response channel */
     };
 
 
@@ -302,11 +302,11 @@ Filter instances attached to a stream are stored in the field
 'strm_flt.filters', each instance is of type 'struct filter *':
 
     /*
-     * Structure reprensenting a filter instance attached to a stream
+     * Structure representing a filter instance attached to a stream
      *
      * 2D-Array fields are used to store info per channel. The first index
      * stands for the request channel, and the second one for the response
-     * channel.  Especially, <next> and <fwd> are offets representing amount of
+     * channel.  Especially, <next> and <fwd> are offsets representing amount of
      * data that the filter are, respectively, parsed and forwarded on a
      * channel. Filters can access these values using FLT_NXT and FLT_FWD
      * macros.
@@ -353,13 +353,7 @@ line:
             { NULL, NULL, NULL },
         }
     };
-
-    __attribute__((constructor))
-    static void
-    __my_filter_init(void)
-    {
-        flt_register_keywords(&flt_kws);
-    }
+    INITCALL1(STG_REGISTER, flt_register_keywords, &flt_kws);
 
 
 Then you must define the internal configuration your filter will use. For
@@ -451,7 +445,7 @@ In the previous example, we expect to read a filter line as follows:
     filter my_filter name MY_NAME ...
 
 
-Optionnaly, by implementing the 'flt_ops.check' callback, you add a step to
+Optionally, by implementing the 'flt_ops.check' callback, you add a step to
 check the internal configuration of your filter after the parsing phase, when
 the HAProxy configuration is fully defined. For example:
 
@@ -498,7 +492,7 @@ Here is an example:
         return 0;
     }
 
-    /* Free ressources allocated by the trace filter. */
+    /* Free resources allocated by the trace filter. */
     static void
     my_filter_deinit(struct proxy *px, struct flt_conf *fconf)
     {
@@ -544,7 +538,7 @@ silently ignored (in this case, global.nbthread will be always equal to one).
 3.4. HANDLING THE STREAMS ACTIVITY
 -----------------------------------
 
-You may be interessted to handle streams activity. For now, there is three
+You may be interested to handle streams activity. For now, there is three
 callbacks that you should define to do so:
 
   * 'flt_ops.stream_start': It is called when a stream is started. This callback
@@ -597,7 +591,7 @@ For example:
     }
 
 
-WARNING: Handling the streams creation and destuction is only possible for
+WARNING: Handling the streams creation and destruction is only possible for
          filters defined on proxies with the frontend capability.
 
 In addition, it is possible to handle creation and destruction of filter
@@ -665,7 +659,7 @@ For example:
 The main purpose of filters is to take part in the channels analyzing. To do so,
 there is 2 callbacks, 'flt_ops.channel_pre_analyze' and
 'flt_ops.channel_post_analyze', called respectively before and after each
-analyzer attached to a channel, execpt analyzers responsible for the data
+analyzer attached to a channel, except analyzers responsible for the data
 parsing/forwarding (TCP or HTTP data). Concretely, on the request channel, these
 callbacks could be called before following analyzers:
 
@@ -1176,9 +1170,12 @@ In addition to these callbacks, there are three others:
 Then, to finish, there are 2 informational callbacks:
 
   * 'flt_ops.http_reset': This callback is called when a HTTP message is
-    reset. This only happens when a '100-continue' response is received. It
+    reset. This happens either when a '100-continue' response is received, or
+    if we're retrying to send the request to the server after it failed. It
     could be useful to reset the filter context before receiving the true
     response.
+    You can know why the callback is called by checking s->txn->status. If it's
+    10X, we're called because of a '100-continue', if not, it's a L7 retry.
 
   * 'flt_ops.http_reply': This callback is called when, at any time, HAProxy
     decides to stop the processing on a HTTP message and to send an internal
@@ -1207,14 +1204,14 @@ data itself, i.e. the buffer offsets. For a HTTP message, you also must update
         if (avail > 10 and /* ...Some condition... */) {
             /* Move the buffer forward to have buf->p pointing on unparsed
              * data */
-            b_adv(msg->chn->buf, flt_rsp_nxt(filter));
+            c_adv(msg->chn, flt_rsp_nxt(filter));
 
             /* Skip first 10 bytes. To simplify this example, we consider a
              * non-wrapping buffer  */
             memmove(buf->p + 10, buf->p, avail - 10);
 
             /* Restore buf->p value */
-            b_rew(msg->chn->buf, flt_rsp_nxt(filter));
+            c_rew(msg->chn, flt_rsp_nxt(filter));
 
             /* Now update other filters */
             flt_change_next_size(filter, msg->chn, -10);
@@ -1240,14 +1237,14 @@ data itself, i.e. the buffer offsets. For a HTTP message, you also must update
         if (len > 10 and /* ...Some condition... */) {
             /* Move the buffer forward to have buf->p pointing on non-forwarded
              * data */
-            b_adv(msg->chn->buf, flt_rsp_fwd(filter));
+            c_adv(msg->chn, flt_rsp_fwd(filter));
 
             /* Skip first 10 bytes. To simplify this example, we consider a
              * non-wrapping buffer  */
             memmove(buf->p + 10, buf->p, len - 10);
 
             /* Restore buf->p value */
-            b_rew(msg->chn->buf, flt_rsp_fwd(filter));
+            c_rew(msg->chn, flt_rsp_fwd(filter));
 
             /* Now update other filters */
             flt_change_forward_size(filter, msg->chn, -10);

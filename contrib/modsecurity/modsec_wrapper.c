@@ -22,10 +22,8 @@
 #include <types/stream.h>
 
 #include <proto/arg.h>
-#include <proto/hdr_idx.h>
 #include <proto/hlua.h>
 #include <proto/log.h>
-#include <proto/proto_http.h>
 #include <proto/spoe.h>
 
 #include <api.h>
@@ -124,41 +122,13 @@ static char *printf_dup(struct request_rec *req, char *fmt, ...)
 	return out;
 }
 
-static char *modsec_addr2str(apr_pool_t *pool, struct sample *addr)
-{
-	sa_family_t family;
-	const void *src;
-	char *dst;
-
-	switch (addr->data.type) {
-	case SMP_T_IPV4:
-		src = &addr->data.u.ipv4;
-		family = AF_INET;
-		break;
-	case SMP_T_IPV6:
-		src = &addr->data.u.ipv6;
-		family = AF_INET6;
-		break;
-	default:
-		return NULL;
-	}
-
-	if (!(dst = apr_pcalloc(pool, INET6_ADDRSTRLEN + 1)))
-		return NULL;
-
-	if (inet_ntop(family, src, dst, INET6_ADDRSTRLEN))
-		return dst;
-
-	return NULL;
-}
-
 /* This function send logs. For now, it do nothing. */
 static void modsec_log(void *obj, int level, char *str)
 {
 	LOG(&null_worker, "%s", str);
 }
 
-/* This fucntion load the ModSecurity file. It returns -1 if the
+/* This function load the ModSecurity file. It returns -1 if the
  * initialisation fails.
  */
 int modsecurity_load(const char *file)
@@ -246,28 +216,28 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	int return_code = -1;
 
 	/* Decode uniqueid. */
-	uniqueid = params->uniqueid.data.u.str.str;
-	uniqueid_len = params->uniqueid.data.u.str.len;
+	uniqueid = params->uniqueid.data.u.str.area;
+	uniqueid_len = params->uniqueid.data.u.str.data;
 
 	/* Decode method. */
-	meth = params->method.data.u.str.str;
-	meth_len = params->method.data.u.str.len;
+	meth = params->method.data.u.str.area;
+	meth_len = params->method.data.u.str.data;
 
 	/* Decode path. */
-	path = params->path.data.u.str.str;
-	path_len = params->path.data.u.str.len;
+	path = params->path.data.u.str.area;
+	path_len = params->path.data.u.str.data;
 
 	/* Decode query string. */
-	qs = params->query.data.u.str.str;
-	qs_len = params->query.data.u.str.len;
+	qs = params->query.data.u.str.area;
+	qs_len = params->query.data.u.str.data;
 
 	/* Decode version. */
-	vers = params->vers.data.u.str.str;
-	vers_len = params->vers.data.u.str.len;
+	vers = params->vers.data.u.str.area;
+	vers_len = params->vers.data.u.str.data;
 
 	/* Decode header binary block. */
-	buf = params->hdrs_bin.data.u.str.str;
-	end = buf + params->hdrs_bin.data.u.str.len;
+	buf = params->hdrs_bin.data.u.str.area;
+	end = buf + params->hdrs_bin.data.u.str.data;
 
 	/* Decode each header. */
 	hdr_nb = 0;
@@ -317,24 +287,15 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 		return -1;
 
 	/* Decode body. */
-	body = params->body.data.u.str.str;
-	body_len = params->body.data.u.str.len;
+	body = params->body.data.u.str.area;
+	body_len = params->body.data.u.str.data;
 
 	fail = 1;
 
 	/* Init processing */
 
 	cr = modsecNewConnection();
-	
 	req = modsecNewRequest(cr, modsec_config);
-	
-	/* Set clientip */
-	#if AP_SERVER_MAJORVERSION_NUMBER > 1 && AP_SERVER_MINORVERSION_NUMBER < 3
-		cr->remote_ip = modsec_addr2str(req->pool, &params->clientip);
-	#else
-		cr->client_ip = modsec_addr2str(req->pool, &params->clientip);
-    #endif
-	
 
 	/* Load request. */
 
@@ -357,16 +318,16 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 		apr_table_setn(req->headers_in, name, value);
 	}
 
-	/* Add X-Forwarded-For header based on clientip param. */
-	//apr_table_addn(req->headers_in, "X-Forwarded-For", modsec_addr2str(req->pool, &params->clientip));
-	//req->useragent_ip = modsec_addr2str(req->pool, &params->clientip);
-	
 	/* Process special headers. */
 	req->range = apr_table_get(req->headers_in, "Range");
 	req->content_type = apr_table_get(req->headers_in, "Content-Type");
 	req->content_encoding = apr_table_get(req->headers_in, "Content-Encoding");
 	req->hostname = apr_table_get(req->headers_in, "Host");
-	req->parsed_uri.hostname = chunk_strdup(req, req->hostname, strlen(req->hostname));
+	if (req->hostname != NULL) {
+		req->parsed_uri.hostname = chunk_strdup(req, req->hostname, strlen(req->hostname));
+	} else {
+		req->parsed_uri.hostname = NULL;
+	}
 
 	lang = apr_table_get(req->headers_in, "Content-Languages");
 	if (lang != NULL) {
@@ -609,7 +570,7 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 		goto fail;
 	}
 
-	/* Stores HTTP body avalaible data in a bucket */
+	/* Stores HTTP body available data in a bucket */
 	data_bucket = apr_bucket_alloc(sizeof(*data_bucket), req->connection->bucket_alloc);
 	if (!data_bucket) {
 		errno = ENOMEM;
@@ -649,11 +610,7 @@ int modsecurity_process(struct worker *worker, struct modsecurity_parameters *pa
 	/* Process request headers analysis. */
 	status = modsecProcessRequestHeaders(req);
 	if (status != DECLINED && status != DONE)
-	{
 		return_code = status;
-		fail = 0;
-		goto fail;
-	}
 
 	/* Process request body analysis. */
 	status = modsecProcessRequestBody(req);

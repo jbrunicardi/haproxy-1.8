@@ -26,6 +26,7 @@
 #include <common/compat.h>
 #include <common/config.h>
 #include <common/debug.h>
+#include <common/initcall.h>
 #include <common/standard.h>
 #include <common/time.h>
 
@@ -37,9 +38,8 @@
 #include <proto/fd.h>
 #include <proto/frontend.h>
 #include <proto/log.h>
-#include <proto/hdr_idx.h>
 #include <proto/proto_tcp.h>
-#include <proto/proto_http.h>
+#include <proto/http_ana.h>
 #include <proto/proxy.h>
 #include <proto/sample.h>
 #include <proto/stream.h>
@@ -65,19 +65,27 @@ int frontend_accept(struct stream *s)
 				if (!(s->logs.logwait &= ~(LW_CLIP|LW_INIT)))
 					s->do_log(s);
 		}
+		else if (conn && !conn_get_src(conn)) {
+			send_log(fe, LOG_INFO, "Connect from unknown source to listener %d (%s/%s)\n",
+				 l->luid, fe->id, (fe->mode == PR_MODE_HTTP) ? "HTTP" : "TCP");
+		}
 		else if (conn) {
 			char pn[INET6_ADDRSTRLEN], sn[INET6_ADDRSTRLEN];
+			int port;
 
-			conn_get_from_addr(conn);
-			conn_get_to_addr(conn);
-
-			switch (addr_to_str(&conn->addr.from, pn, sizeof(pn))) {
+			switch (addr_to_str(conn->src, pn, sizeof(pn))) {
 			case AF_INET:
 			case AF_INET6:
-				addr_to_str(&conn->addr.to, sn, sizeof(sn));
+				if (conn_get_dst(conn)) {
+					addr_to_str(conn->dst, sn, sizeof(sn));
+					port = get_host_port(conn->dst);
+				} else {
+					strcpy(sn, "undetermined address");
+					port = 0;
+				}
 				send_log(fe, LOG_INFO, "Connect from %s:%d to %s:%d (%s/%s)\n",
-					 pn, get_host_port(&conn->addr.from),
-					 sn, get_host_port(&conn->addr.to),
+					 pn, get_host_port(conn->src),
+					 sn, port,
 					 fe->id, (fe->mode == PR_MODE_HTTP) ? "HTTP" : "TCP");
 				break;
 			case AF_UNIX:
@@ -97,11 +105,8 @@ int frontend_accept(struct stream *s)
 		const char *alpn_str = NULL;
 		int alpn_len;
 
-		conn_get_from_addr(conn);
-
 		/* try to report the ALPN value when available (also works for NPN) */
-
-		if (conn && conn == cs_conn(objt_cs(s->si[0].end))) {
+		if (conn == cs_conn(objt_cs(s->si[0].end))) {
 			if (conn_get_alpn(conn, &alpn_str, &alpn_len) && alpn_str) {
 				int len = MIN(alpn_len, sizeof(alpn) - 1);
 				memcpy(alpn, alpn_str, len);
@@ -109,12 +114,17 @@ int frontend_accept(struct stream *s)
 			}
 		}
 
-		switch (addr_to_str(&conn->addr.from, pn, sizeof(pn))) {
+		if (!conn_get_src(conn)) {
+			chunk_printf(&trash, "%08x:%s.accept(%04x)=%04x from [listener:%d] ALPN=%s\n",
+			             s->uniq_id, fe->id, (unsigned short)l->fd, (unsigned short)conn->handle.fd,
+			             l->luid, alpn);
+		}
+		else switch (addr_to_str(conn->src, pn, sizeof(pn))) {
 		case AF_INET:
 		case AF_INET6:
 			chunk_printf(&trash, "%08x:%s.accept(%04x)=%04x from [%s:%d] ALPN=%s\n",
 			             s->uniq_id, fe->id, (unsigned short)l->fd, (unsigned short)conn->handle.fd,
-			             pn, get_host_port(&conn->addr.from), alpn);
+			             pn, get_host_port(conn->src), alpn);
 			break;
 		case AF_UNIX:
 			/* UNIX socket, only the destination is known */
@@ -124,7 +134,7 @@ int frontend_accept(struct stream *s)
 			break;
 		}
 
-		shut_your_big_mouth_gcc(write(1, trash.str, trash.len));
+		shut_your_big_mouth_gcc(write(1, trash.area, trash.data));
 	}
 
 	if (fe->mode == PR_MODE_HTTP)
@@ -184,13 +194,29 @@ smp_fetch_fe_id(const struct arg *args, struct sample *smp, const char *kw, void
 static int
 smp_fetch_fe_name(const struct arg *args, struct sample *smp, const char *kw, void *private)
 {
-	smp->data.u.str.str = (char *)smp->sess->fe->id;
-	if (!smp->data.u.str.str)
+	smp->data.u.str.area = (char *)smp->sess->fe->id;
+	if (!smp->data.u.str.area)
 		return 0;
 
 	smp->data.type = SMP_T_STR;
 	smp->flags = SMP_F_CONST;
-	smp->data.u.str.len = strlen(smp->data.u.str.str);
+	smp->data.u.str.data = strlen(smp->data.u.str.area);
+	return 1;
+}
+
+/* set string to the name of the default backend */
+static int
+smp_fetch_fe_defbe(const struct arg *args, struct sample *smp, const char *kw, void *private)
+{
+	if (!smp->sess->fe->defbe.be)
+		return 0;
+	smp->data.u.str.area = (char *)smp->sess->fe->defbe.be->id;
+	if (!smp->data.u.str.area)
+		return 0;
+
+	smp->data.type = SMP_T_STR;
+	smp->flags = SMP_F_CONST;
+	smp->data.u.str.data = strlen(smp->data.u.str.area);
 	return 1;
 }
 
@@ -239,6 +265,7 @@ smp_fetch_fe_conn(const struct arg *args, struct sample *smp, const char *kw, vo
  */
 static struct sample_fetch_kw_list smp_kws = {ILH, {
 	{ "fe_conn",      smp_fetch_fe_conn,      ARG1(1,FE), NULL, SMP_T_SINT, SMP_USE_INTRN, },
+	{ "fe_defbe",     smp_fetch_fe_defbe,     0,          NULL, SMP_T_STR,  SMP_USE_FTEND, },
 	{ "fe_id",        smp_fetch_fe_id,        0,          NULL, SMP_T_SINT, SMP_USE_FTEND, },
 	{ "fe_name",      smp_fetch_fe_name,      0,          NULL, SMP_T_STR,  SMP_USE_FTEND, },
 	{ "fe_req_rate",  smp_fetch_fe_req_rate,  ARG1(1,FE), NULL, SMP_T_SINT, SMP_USE_INTRN, },
@@ -246,6 +273,7 @@ static struct sample_fetch_kw_list smp_kws = {ILH, {
 	{ /* END */ },
 }};
 
+INITCALL1(STG_REGISTER, sample_register_fetches, &smp_kws);
 
 /* Note: must not be declared <const> as its list will be overwritten.
  * Please take care of keeping this list alphabetically sorted.
@@ -254,14 +282,7 @@ static struct acl_kw_list acl_kws = {ILH, {
 	{ /* END */ },
 }};
 
-
-__attribute__((constructor))
-static void __frontend_init(void)
-{
-	sample_register_fetches(&smp_kws);
-	acl_register_keywords(&acl_kws);
-}
-
+INITCALL1(STG_REGISTER, acl_register_keywords, &acl_kws);
 
 /*
  * Local variables:

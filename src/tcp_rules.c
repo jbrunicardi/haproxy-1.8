@@ -13,6 +13,7 @@
 #include <common/compat.h>
 #include <common/config.h>
 #include <common/debug.h>
+#include <common/initcall.h>
 #include <common/mini-clist.h>
 #include <common/standard.h>
 #include <common/ticks.h>
@@ -34,6 +35,8 @@
 #include <proto/stream.h>
 #include <proto/stream_interface.h>
 #include <proto/tcp_rules.h>
+
+#define TRACE_SOURCE &trace_strm
 
 /* List head of all known action keywords for "tcp-request connection" */
 struct list tcp_req_conn_keywords = LIST_HEAD_INIT(tcp_req_conn_keywords);
@@ -103,14 +106,7 @@ int tcp_inspect_request(struct stream *s, struct channel *req, int an_bit)
 	int partial;
 	int act_flags = 0;
 
-	DPRINTF(stderr,"[%u] %s: stream=%p b=%p, exp(r,w)=%u,%u bf=%08x bh=%d analysers=%02x\n",
-		now_ms, __FUNCTION__,
-		s,
-		req,
-		req->rex, req->wex,
-		req->flags,
-		req->buf->i,
-		req->analysers);
+	DBG_TRACE_ENTER(STRM_EV_STRM_ANA|STRM_EV_TCP_ANA, s);
 
 	/* We don't know whether we have enough data, so must proceed
 	 * this way :
@@ -122,7 +118,7 @@ int tcp_inspect_request(struct stream *s, struct channel *req, int an_bit)
 	 * - if one rule returns KO, then return KO
 	 */
 
-	if ((req->flags & CF_SHUTR) || buffer_full(req->buf, global.tune.maxrewrite) ||
+	if ((req->flags & CF_SHUTR) || channel_full(req, global.tune.maxrewrite) ||
 	    !s->be->tcp_req.inspect_delay || tick_is_expired(req->analyse_exp, now_ms))
 		partial = SMP_OPT_FINAL;
 	else
@@ -162,19 +158,21 @@ resume_execution:
 				break;
 			}
 			else if (rule->action == ACT_ACTION_DENY) {
+				si_must_kill_conn(chn_prod(req));
 				channel_abort(req);
 				channel_abort(&s->res);
 				req->analysers = 0;
 
-				HA_ATOMIC_ADD(&s->be->be_counters.denied_req, 1);
-				HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_req, 1);
+				_HA_ATOMIC_ADD(&s->be->be_counters.denied_req, 1);
+				_HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_req, 1);
 				if (sess->listener && sess->listener->counters)
-					HA_ATOMIC_ADD(&sess->listener->counters->denied_req, 1);
+					_HA_ATOMIC_ADD(&sess->listener->counters->denied_req, 1);
 
 				if (!(s->flags & SF_ERR_MASK))
 					s->flags |= SF_ERR_PRXCOND;
 				if (!(s->flags & SF_FINST_MASK))
 					s->flags |= SF_FINST_R;
+				DBG_TRACE_DEVEL("leaving on error", STRM_EV_STRM_ANA|STRM_EV_TCP_ANA|STRM_EV_TCP_ERR, s);
 				return 0;
 			}
 			else if (rule->action >= ACT_ACTION_TRK_SC0 && rule->action <= ACT_ACTION_TRK_SCMAX) {
@@ -219,11 +217,12 @@ resume_execution:
 				if (cap[h->index] == NULL) /* no more capture memory */
 					continue;
 
-				len = key->data.u.str.len;
+				len = key->data.u.str.data;
 				if (len > h->len)
 					len = h->len;
 
-				memcpy(cap[h->index], key->data.u.str.str, len);
+				memcpy(cap[h->index], key->data.u.str.area,
+				       len);
 				cap[h->index][len] = 0;
 			}
 			else {
@@ -239,12 +238,13 @@ resume_execution:
 				case ACT_RET_CONT:
 					continue;
 				case ACT_RET_STOP:
+				case ACT_RET_DONE:
 					break;
 				case ACT_RET_YIELD:
 					s->current_rule = rule;
 					goto missing_data;
 				}
-				break; /* ACT_RET_STOP */
+				break; /* ACT_RET_STOP/DONE */
 			}
 		}
 	}
@@ -254,6 +254,7 @@ resume_execution:
 	 */
 	req->analysers &= ~an_bit;
 	req->analyse_exp = TICK_ETERNITY;
+	DBG_TRACE_LEAVE(STRM_EV_STRM_ANA|STRM_EV_TCP_ANA, s);
 	return 1;
 
  missing_data:
@@ -261,6 +262,7 @@ resume_execution:
 	/* just set the request timeout once at the beginning of the request */
 	if (!tick_isset(req->analyse_exp) && s->be->tcp_req.inspect_delay)
 		req->analyse_exp = tick_add(now_ms, s->be->tcp_req.inspect_delay);
+	DBG_TRACE_DEVEL("waiting for more data", STRM_EV_STRM_ANA|STRM_EV_TCP_ANA, s);
 	return 0;
 
 }
@@ -278,14 +280,7 @@ int tcp_inspect_response(struct stream *s, struct channel *rep, int an_bit)
 	int partial;
 	int act_flags = 0;
 
-	DPRINTF(stderr,"[%u] %s: stream=%p b=%p, exp(r,w)=%u,%u bf=%08x bh=%d analysers=%02x\n",
-		now_ms, __FUNCTION__,
-		s,
-		rep,
-		rep->rex, rep->wex,
-		rep->flags,
-		rep->buf->i,
-		rep->analysers);
+	DBG_TRACE_ENTER(STRM_EV_STRM_ANA|STRM_EV_TCP_ANA, s);
 
 	/* We don't know whether we have enough data, so must proceed
 	 * this way :
@@ -324,6 +319,7 @@ int tcp_inspect_response(struct stream *s, struct channel *rep, int an_bit)
 				/* just set the analyser timeout once at the beginning of the response */
 				if (!tick_isset(rep->analyse_exp) && s->be->tcp_rep.inspect_delay)
 					rep->analyse_exp = tick_add(now_ms, s->be->tcp_rep.inspect_delay);
+				DBG_TRACE_DEVEL("waiting for more data", STRM_EV_STRM_ANA|STRM_EV_TCP_ANA, s);
 				return 0;
 			}
 
@@ -340,23 +336,26 @@ resume_execution:
 				break;
 			}
 			else if (rule->action == ACT_ACTION_DENY) {
+				si_must_kill_conn(chn_prod(rep));
 				channel_abort(rep);
 				channel_abort(&s->req);
 				rep->analysers = 0;
 
-				HA_ATOMIC_ADD(&s->be->be_counters.denied_resp, 1);
-				HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_resp, 1);
+				_HA_ATOMIC_ADD(&s->be->be_counters.denied_resp, 1);
+				_HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_resp, 1);
 				if (sess->listener && sess->listener->counters)
-					HA_ATOMIC_ADD(&sess->listener->counters->denied_resp, 1);
+					_HA_ATOMIC_ADD(&sess->listener->counters->denied_resp, 1);
 
 				if (!(s->flags & SF_ERR_MASK))
 					s->flags |= SF_ERR_PRXCOND;
 				if (!(s->flags & SF_FINST_MASK))
 					s->flags |= SF_FINST_D;
+				DBG_TRACE_DEVEL("leaving on error", STRM_EV_STRM_ANA|STRM_EV_TCP_ANA|STRM_EV_TCP_ERR, s);
 				return 0;
 			}
 			else if (rule->action == ACT_TCP_CLOSE) {
 				chn_prod(rep)->flags |= SI_FL_NOLINGER | SI_FL_NOHALF;
+				si_must_kill_conn(chn_prod(rep));
 				si_shutr(chn_prod(rep));
 				si_shutw(chn_prod(rep));
 				break;
@@ -374,13 +373,15 @@ resume_execution:
 				case ACT_RET_CONT:
 					continue;
 				case ACT_RET_STOP:
+				case ACT_RET_DONE:
 					break;
 				case ACT_RET_YIELD:
 					channel_dont_close(rep);
 					s->current_rule = rule;
+					DBG_TRACE_DEVEL("waiting for more data", STRM_EV_STRM_ANA|STRM_EV_TCP_ANA, s);
 					return 0;
 				}
-				break; /* ACT_RET_STOP */
+				break; /* ACT_RET_STOP/DONE */
 			}
 		}
 	}
@@ -390,6 +391,7 @@ resume_execution:
 	 */
 	rep->analysers &= ~an_bit;
 	rep->analyse_exp = TICK_ETERNITY;
+	DBG_TRACE_LEAVE(STRM_EV_STRM_ANA|STRM_EV_TCP_ANA, s);
 	return 1;
 }
 
@@ -427,9 +429,9 @@ int tcp_exec_l4_rules(struct session *sess)
 				break;
 			}
 			else if (rule->action == ACT_ACTION_DENY) {
-				HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_conn, 1);
+				_HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_conn, 1);
 				if (sess->listener && sess->listener->counters)
-					HA_ATOMIC_ADD(&sess->listener->counters->denied_conn, 1);
+					_HA_ATOMIC_ADD(&sess->listener->counters->denied_conn, 1);
 
 				result = 0;
 				break;
@@ -450,12 +452,22 @@ int tcp_exec_l4_rules(struct session *sess)
 					stream_track_stkctr(&sess->stkctr[trk_idx(rule->action)], t, ts);
 			}
 			else if (rule->action == ACT_TCP_EXPECT_PX) {
+				if (!(conn->flags & (CO_FL_HANDSHAKE_NOSSL))) {
+					if (xprt_add_hs(conn) < 0) {
+						result = 0;
+						break;
+					}
+				}
 				conn->flags |= CO_FL_ACCEPT_PROXY;
-				conn_sock_want_recv(conn);
 			}
 			else if (rule->action == ACT_TCP_EXPECT_CIP) {
+				if (!(conn->flags & (CO_FL_HANDSHAKE_NOSSL))) {
+					if (xprt_add_hs(conn) < 0) {
+						result = 0;
+						break;
+					}
+				}
 				conn->flags |= CO_FL_ACCEPT_CIP;
-				conn_sock_want_recv(conn);
 			}
 			else {
 				/* Custom keywords. */
@@ -469,6 +481,7 @@ int tcp_exec_l4_rules(struct session *sess)
 					send_log(sess->fe, LOG_WARNING,
 					         "Internal error: yield not allowed with tcp-request connection actions.");
 				case ACT_RET_STOP:
+				case ACT_RET_DONE:
 					break;
 				case ACT_RET_CONT:
 					continue;
@@ -476,7 +489,7 @@ int tcp_exec_l4_rules(struct session *sess)
 					result = 0;
 					break;
 				}
-				break; /* ACT_RET_STOP */
+				break; /* ACT_RET_STOP/DONE */
 			}
 		}
 	}
@@ -514,9 +527,9 @@ int tcp_exec_l5_rules(struct session *sess)
 				break;
 			}
 			else if (rule->action == ACT_ACTION_DENY) {
-				HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_sess, 1);
+				_HA_ATOMIC_ADD(&sess->fe->fe_counters.denied_sess, 1);
 				if (sess->listener && sess->listener->counters)
-					HA_ATOMIC_ADD(&sess->listener->counters->denied_sess, 1);
+					_HA_ATOMIC_ADD(&sess->listener->counters->denied_sess, 1);
 
 				result = 0;
 				break;
@@ -548,6 +561,7 @@ int tcp_exec_l5_rules(struct session *sess)
 					send_log(sess->fe, LOG_WARNING,
 					         "Internal error: yield not allowed with tcp-request session actions.");
 				case ACT_RET_STOP:
+				case ACT_RET_DONE:
 					break;
 				case ACT_RET_CONT:
 					continue;
@@ -555,7 +569,7 @@ int tcp_exec_l5_rules(struct session *sess)
 					result = 0;
 					break;
 				}
-				break; /* ACT_RET_STOP */
+				break; /* ACT_RET_STOP/DONE */
 			}
 		}
 	}
@@ -600,7 +614,8 @@ static int tcp_parse_response_rule(char **args, int arg, int section_type,
 			action_build_list(&tcp_res_cont_keywords, &trash);
 			memprintf(err,
 			          "'%s %s' expects 'accept', 'close', 'reject', %s in %s '%s' (got '%s')",
-			          args[0], args[1], trash.str, proxy_type_str(curpx), curpx->id, args[arg]);
+			          args[0], args[1], trash.area,
+			          proxy_type_str(curpx), curpx->id, args[arg]);
 			return -1;
 		}
 	}
@@ -679,7 +694,7 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 			memprintf(err,
 			          "'%s %s %s' : fetch method '%s' extracts information from '%s', none of which is available here",
 			          args[0], args[1], args[kw], args[arg-1], sample_src_names(expr->fetch->use));
-			free(expr);
+			release_sample_expr(expr);
 			return -1;
 		}
 
@@ -689,7 +704,7 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 				memprintf(err,
 					  "'%s %s %s' : missing length value",
 					  args[0], args[1], args[kw]);
-				free(expr);
+				release_sample_expr(expr);
 				return -1;
 			}
 			/* we copy the table name for now, it will be resolved later */
@@ -698,7 +713,7 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 				memprintf(err,
 					  "'%s %s %s' : length must be > 0",
 					  args[0], args[1], args[kw]);
-				free(expr);
+				release_sample_expr(expr);
 				return -1;
 			}
 			arg++;
@@ -723,20 +738,26 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 		curpx->req_cap = hdr;
 		curpx->to_log |= LW_REQHDR;
 
-		/* check if we need to allocate an hdr_idx struct for HTTP parsing */
+		/* check if we need to allocate an http_txn struct for HTTP parsing */
 		curpx->http_needed |= !!(expr->fetch->use & SMP_USE_HTTP_ANY);
 
 		rule->arg.cap.expr = expr;
 		rule->arg.cap.hdr = hdr;
 		rule->action = ACT_TCP_CAPTURE;
 	}
-	else if (strncmp(args[arg], "track-sc", 8) == 0 &&
-		 args[arg][9] == '\0' && args[arg][8] >= '0' &&
-		 args[arg][8] < '0' + MAX_SESS_STKCTR) { /* track-sc 0..9 */
+	else if (strncmp(args[arg], "track-sc", 8) == 0) {
 		struct sample_expr *expr;
 		int kw = arg;
+		unsigned int tsc_num;
+		const char *tsc_num_str;
 
 		arg++;
+
+		tsc_num_str = &args[kw][8];
+		if (cfg_parse_track_sc_num(&tsc_num, tsc_num_str, tsc_num_str + strlen(tsc_num_str), err) == -1) {
+			memprintf(err, "'%s %s %s' : %s", args[0], args[1], args[kw], *err);
+			return -1;
+		}
 
 		curpx->conf.args.ctx = ARGC_TRK;
 		expr = sample_parse_expr(args, &arg, file, line, err, &curpx->conf.args);
@@ -751,11 +772,11 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 			memprintf(err,
 			          "'%s %s %s' : fetch method '%s' extracts information from '%s', none of which is available here",
 			          args[0], args[1], args[kw], args[arg-1], sample_src_names(expr->fetch->use));
-			free(expr);
+			release_sample_expr(expr);
 			return -1;
 		}
 
-		/* check if we need to allocate an hdr_idx struct for HTTP parsing */
+		/* check if we need to allocate an http_txn struct for HTTP parsing */
 		curpx->http_needed |= !!(expr->fetch->use & SMP_USE_HTTP_ANY);
 
 		if (strcmp(args[arg], "table") == 0) {
@@ -764,7 +785,7 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 				memprintf(err,
 					  "'%s %s %s' : missing table name",
 					  args[0], args[1], args[kw]);
-				free(expr);
+				release_sample_expr(expr);
 				return -1;
 			}
 			/* we copy the table name for now, it will be resolved later */
@@ -772,7 +793,7 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 			arg++;
 		}
 		rule->arg.trk_ctr.expr = expr;
-		rule->action = ACT_ACTION_TRK_SC0 + args[kw][8] - '0';
+		rule->action = ACT_ACTION_TRK_SC0 + tsc_num;
 		rule->check_ptr = check_trk_action;
 	}
 	else if (strcmp(args[arg], "expect-proxy") == 0) {
@@ -843,7 +864,8 @@ static int tcp_parse_request_rule(char **args, int arg, int section_type,
 			memprintf(err,
 			          "'%s %s' expects 'accept', 'reject', 'track-sc0' ... 'track-sc%d', %s "
 			          "in %s '%s' (got '%s').\n",
-			          args[0], args[1], MAX_SESS_STKCTR-1, trash.str, proxy_type_str(curpx),
+			          args[0], args[1], MAX_SESS_STKCTR-1,
+			          trash.area, proxy_type_str(curpx),
 			          curpx->id, args[arg]);
 			return -1;
 		}
@@ -899,7 +921,12 @@ static int tcp_parse_tcp_rep(char **args, int section_type, struct proxy *curpx,
 			memprintf(err,
 			          "'%s %s' expects a positive delay in milliseconds, in %s '%s'",
 			          args[0], args[1], proxy_type_str(curpx), curpx->id);
-			if (ptr)
+
+			if (ptr == PARSE_TIME_OVER)
+				memprintf(err, "%s (timer overflow in '%s', maximum value is 2147483647 ms or ~24.8 days)", *err, args[2]);
+			else if (ptr == PARSE_TIME_UNDER)
+				memprintf(err, "%s (timer underflow in '%s', minimum non-null value is 1 ms)", *err, args[2]);
+			else if (ptr)
 				memprintf(err, "%s (unexpected character '%c')", *err, *ptr);
 			return -1;
 		}
@@ -1008,7 +1035,12 @@ static int tcp_parse_tcp_req(char **args, int section_type, struct proxy *curpx,
 			memprintf(err,
 			          "'%s %s' expects a positive delay in milliseconds, in %s '%s'",
 			          args[0], args[1], proxy_type_str(curpx), curpx->id);
-			if (ptr)
+
+			if (ptr == PARSE_TIME_OVER)
+				memprintf(err, "%s (timer overflow in '%s', maximum value is 2147483647 ms or ~24.8 days)", *err, args[2]);
+			else if (ptr == PARSE_TIME_UNDER)
+				memprintf(err, "%s (timer underflow in '%s', minimum non-null value is 1 ms)", *err, args[2]);
+			else if (ptr)
 				memprintf(err, "%s (unexpected character '%c')", *err, *ptr);
 			return -1;
 		}
@@ -1182,12 +1214,7 @@ static struct cfg_kw_list cfg_kws = {ILH, {
 	{ 0, NULL, NULL },
 }};
 
-
-__attribute__((constructor))
-static void __tcp_protocol_init(void)
-{
-	cfg_register_keywords(&cfg_kws);
-}
+INITCALL1(STG_REGISTER, cfg_register_keywords, &cfg_kws);
 
 /*
  * Local variables:

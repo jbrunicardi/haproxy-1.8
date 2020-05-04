@@ -26,7 +26,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#include <common/chunk.h>
+#include <common/buf.h>
+#include <common/http.h>
 #include <common/mini-clist.h>
 
 struct arg;
@@ -132,7 +133,7 @@ enum {
 	SMP_USE_TXFIN = 1 << SMP_SRC_TXFIN,  /* final information about the transaction (eg: #comp rate) */
 	SMP_USE_SSFIN = 1 << SMP_SRC_SSFIN,  /* final information about the stream (eg: #requests, final flags) */
 
-	/* This composite one is useful to detect if an hdr_idx needs to be allocated */
+	/* This composite one is useful to detect if an http_txn needs to be allocated */
 	SMP_USE_HTTP_ANY = SMP_USE_HRQHV | SMP_USE_HRQHP | SMP_USE_HRQBO |
 	                   SMP_USE_HRSHV | SMP_USE_HRSHP | SMP_USE_HRSBO,
 };
@@ -210,19 +211,6 @@ enum {
 struct session;
 struct stream;
 
-/* Known HTTP methods */
-enum http_meth_t {
-	HTTP_METH_OPTIONS,
-	HTTP_METH_GET,
-	HTTP_METH_HEAD,
-	HTTP_METH_POST,
-	HTTP_METH_PUT,
-	HTTP_METH_DELETE,
-	HTTP_METH_TRACE,
-	HTTP_METH_CONNECT,
-	HTTP_METH_OTHER, /* Must be the last entry */
-} __attribute__((packed));
-
 /* a sample context might be used by any sample fetch function in order to
  * store information needed across multiple calls (eg: restart point for a
  * next occurrence). By definition it may store up to 8 pointers, or any
@@ -242,17 +230,12 @@ union smp_ctx {
  * sample will automatically be duplicated when a change larger than <len> has
  * to be performed. Thus it is safe to always set size to zero.
  */
-struct meth {
-	enum http_meth_t meth;
-	struct chunk str;
-};
-
 union sample_value {
 	long long int   sint;  /* used for signed 64bits integers */
 	struct in_addr  ipv4;  /* used for ipv4 addresses */
 	struct in6_addr ipv6;  /* used for ipv6 addresses */
-	struct chunk    str;   /* used for char strings or buffers */
-	struct meth     meth;  /* used for http method */
+	struct buffer    str;   /* used for char strings or buffers */
+	struct http_meth meth;  /* used for http method */
 };
 
 /* Used to store sample constant */

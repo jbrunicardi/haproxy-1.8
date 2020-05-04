@@ -82,6 +82,32 @@
  */
 #define __maybe_unused __attribute__((unused))
 
+/* This allows gcc to know that some locations are never reached, for example
+ * after a longjmp() in the Lua code, hence that some errors caught by such
+ * methods cannot propagate further. This is important with gcc versions 6 and
+ * above which can more aggressively detect null dereferences. The builtin
+ * below was introduced in gcc 4.5, and before it we didn't care.
+ */
+#if __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5)
+#define my_unreachable() __builtin_unreachable()
+#else
+#define my_unreachable()
+#endif
+
+/* This macro may be used to block constant propagation that lets the compiler
+ * detect a possible NULL dereference on a variable resulting from an explicit
+ * assignment in an impossible check. Sometimes a function is called which does
+ * safety checks and returns NULL if safe conditions are not met. The place
+ * where it's called cannot hit this condition and dereferencing the pointer
+ * without first checking it will make the compiler emit a warning about a
+ * "potential null pointer dereference" which is hard to work around. This
+ * macro "washes" the pointer and prevents the compiler from emitting tests
+ * branching to undefined instructions. It may only be used when the developer
+ * is absolutely certain that the conditions are guaranteed and that the
+ * pointer passed in argument cannot be NULL by design.
+ */
+#define ALREADY_CHECKED(p) do { asm("" : "=rm"(p) : "0"(p)); } while (0)
+
 /*
  * Gcc >= 3 provides the ability for the programme to give hints to the
  * compiler about what branch of an if is most likely to be taken. This
@@ -107,5 +133,105 @@
 #endif
 #endif
 
+#ifndef __GNUC_PREREQ__
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+#define __GNUC_PREREQ__(ma, mi) \
+        (__GNUC__ > (ma) || __GNUC__ == (ma) && __GNUC_MINOR__ >= (mi))
+#else
+#define __GNUC_PREREQ__(ma, mi) 0
+#endif
+#endif
+
+#ifndef offsetof
+#if __GNUC_PREREQ__(4, 1)
+#define offsetof(type, field)  __builtin_offsetof(type, field)
+#else
+#define offsetof(type, field) \
+        ((size_t)(uintptr_t)((const volatile void *)&((type *)0)->field))
+#endif
+#endif
+
+/* Some architectures have a double-word CAS, sometimes even dual-8 bytes.
+ * Some architectures support unaligned accesses, others are fine with them
+ * but only for non-atomic operations. Also mention those supporting unaligned
+ * accesses and being little endian, and those where unaligned accesses are
+ * known to be fast (almost as fast as aligned ones).
+ */
+#if defined(__x86_64__)
+#define HA_UNALIGNED
+#define HA_UNALIGNED_LE
+#define HA_UNALIGNED_LE64
+#define HA_UNALIGNED_FAST
+#define HA_UNALIGNED_ATOMIC
+#define HA_HAVE_CAS_DW
+#define HA_CAS_IS_8B
+#elif defined(__i386__) || defined(__i486__) || defined(__i586__) || defined(__i686__)
+#define HA_UNALIGNED
+#define HA_UNALIGNED_LE
+#define HA_UNALIGNED_ATOMIC
+#elif defined (__aarch64__) || defined(__ARM_ARCH_8A)
+#define HA_UNALIGNED
+#define HA_UNALIGNED_LE
+#define HA_UNALIGNED_LE64
+#define HA_UNALIGNED_FAST
+#define HA_HAVE_CAS_DW
+#define HA_CAS_IS_8B
+#elif defined(__arm__) && (defined(__ARM_ARCH_7__) || defined(__ARM_ARCH_7A__))
+#define HA_UNALIGNED
+#define HA_UNALIGNED_LE
+#define HA_UNALIGNED_FAST
+#define HA_HAVE_CAS_DW
+#endif
+
+
+/* sets alignment for current field or variable */
+#ifndef ALIGNED
+#define ALIGNED(x) __attribute__((aligned(x)))
+#endif
+
+/* sets alignment only on architectures preventing unaligned atomic accesses */
+#ifndef MAYBE_ALIGNED
+#ifndef HA_UNALIGNED
+#define MAYBE_ALIGNED(x)  ALIGNED(x)
+#else
+#define MAYBE_ALIGNED(x)
+#endif
+#endif
+
+/* sets alignment only on architectures preventing unaligned atomic accesses */
+#ifndef ATOMIC_ALIGNED
+#ifndef HA_UNALIGNED_ATOMIC
+#define ATOMIC_ALIGNED(x)  ALIGNED(x)
+#else
+#define ATOMIC_ALIGNED(x)
+#endif
+#endif
+
+/* add a mandatory alignment for next fields in a structure */
+#ifndef ALWAYS_ALIGN
+#define ALWAYS_ALIGN(x)  union { } ALIGNED(x)
+#endif
+
+/* add an optional alignment for next fields in a structure, only for archs
+ * which do not support unaligned accesses.
+ */
+#ifndef MAYBE_ALIGN
+#ifndef HA_UNALIGNED
+#define MAYBE_ALIGN(x)  union { } ALIGNED(x)
+#else
+#define MAYBE_ALIGN(x)
+#endif
+#endif
+
+/* add an optional alignment for next fields in a structure, only for archs
+ * which do not support unaligned accesses for atomic operations.
+ */
+#ifndef ATOMIC_ALIGN
+#ifndef HA_UNALIGNED_ATOMIC
+#define ATOMIC_ALIGN(x)  union { } ALIGNED(x)
+#else
+#define ATOMIC_ALIGN(x)
+#endif
+#endif
 
 #endif /* _COMMON_COMPILER_H */

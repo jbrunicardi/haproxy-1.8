@@ -1283,21 +1283,13 @@ process_frame_cb(evutil_socket_t fd, short events, void *arg)
 
 			memset(&params, 0, sizeof(params));
 
-			if (nbargs != 9)
+			if (nbargs != 8)
 				goto skip_message;
 
 			/* Decode parameter name. */
 			if (spoe_decode_buffer(&p, end, &str, &sz) == -1)
 				goto stop_processing;
 
-			/* Decode clientip. */
-			if (spoe_decode_data(&p, end, &params.clientip) == -1)
-				goto skip_message;
-
-			/* Decode parameter name. */
-			if (spoe_decode_buffer(&p, end, &str, &sz) == -1)
-				goto stop_processing;
-			
 			/* Decode unique id. */
 			if (spoe_decode_data(&p, end, &params.uniqueid) == -1)
 				goto skip_message;

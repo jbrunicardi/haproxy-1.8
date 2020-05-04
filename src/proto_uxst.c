@@ -30,6 +30,7 @@
 #include <common/config.h>
 #include <common/debug.h>
 #include <common/errors.h>
+#include <common/initcall.h>
 #include <common/mini-clist.h>
 #include <common/standard.h>
 #include <common/time.h>
@@ -47,7 +48,7 @@
 static int uxst_bind_listener(struct listener *listener, char *errmsg, int errlen);
 static int uxst_bind_listeners(struct protocol *proto, char *errmsg, int errlen);
 static int uxst_unbind_listeners(struct protocol *proto);
-static int uxst_connect_server(struct connection *conn, int data, int delack);
+static int uxst_connect_server(struct connection *conn, int flags);
 static void uxst_add_listener(struct listener *listener, int port);
 static int uxst_pause_listener(struct listener *l);
 static int uxst_get_src(int fd, struct sockaddr *sa, socklen_t salen, int dir);
@@ -76,6 +77,8 @@ static struct protocol proto_unix = {
 	.listeners = LIST_HEAD_INIT(proto_unix.listeners),
 	.nb_listeners = 0,
 };
+
+INITCALL1(STG_REGISTER, protocol_register, &proto_unix);
 
 /********************************
  * 1) low-level socket functions
@@ -184,6 +187,7 @@ static int uxst_bind_listener(struct listener *listener, char *errmsg, int errle
 	struct sockaddr_un addr;
 	const char *msg = NULL;
 	const char *path;
+	int maxpathlen;
 	int ext, ready;
 	socklen_t ready_len;
 	int err;
@@ -202,6 +206,8 @@ static int uxst_bind_listener(struct listener *listener, char *errmsg, int errle
 		listener->fd = uxst_find_compatible_fd(listener);
 	path = ((struct sockaddr_un *)&listener->addr)->sun_path;
 
+	maxpathlen = MIN(MAXPATHLEN, sizeof(addr.sun_path));
+
 	/* if the listener already has an fd assigned, then we were offered the
 	 * fd by an external process (most likely the parent), and we don't want
 	 * to create a new socket. However we still want to set a few flags on
@@ -213,17 +219,17 @@ static int uxst_bind_listener(struct listener *listener, char *errmsg, int errle
 		goto fd_ready;
 
 	if (path[0]) {
-		ret = snprintf(tempname, MAXPATHLEN, "%s.%d.tmp", path, pid);
-		if (ret < 0 || ret >= MAXPATHLEN) {
+		ret = snprintf(tempname, maxpathlen, "%s.%d.tmp", path, pid);
+		if (ret < 0 || ret >= maxpathlen) {
 			err |= ERR_FATAL | ERR_ALERT;
-			msg = "name too long for UNIX socket";
+			msg = "name too long for UNIX socket (limit usually 97)";
 			goto err_return;
 		}
 
-		ret = snprintf(backname, MAXPATHLEN, "%s.%d.bak", path, pid);
-		if (ret < 0 || ret >= MAXPATHLEN) {
+		ret = snprintf(backname, maxpathlen, "%s.%d.bak", path, pid);
+		if (ret < 0 || ret >= maxpathlen) {
 			err |= ERR_FATAL | ERR_ALERT;
-			msg = "name too long for UNIX socket";
+			msg = "name too long for UNIX socket (limit usually 97)";
 			goto err_return;
 		}
 
@@ -247,7 +253,7 @@ static int uxst_bind_listener(struct listener *listener, char *errmsg, int errle
 			goto err_return;
 		}
 
-		strncpy(addr.sun_path, tempname, sizeof(addr.sun_path));
+		strncpy(addr.sun_path, tempname, sizeof(addr.sun_path) - 1);
 		addr.sun_path[sizeof(addr.sun_path) - 1] = 0;
 	}
 	else {
@@ -312,7 +318,7 @@ static int uxst_bind_listener(struct listener *listener, char *errmsg, int errle
 		ready = 0;
 
 	if (!(ext && ready) && /* only listen if not already done by external process */
-	    listen(fd, listener->backlog ? listener->backlog : listener->maxconn) < 0) {
+	    listen(fd, listener_backlog(listener)) < 0) {
 		err |= ERR_FATAL | ERR_ALERT;
 		msg = "cannot listen to UNIX socket";
 		goto err_unlink_temp;
@@ -336,13 +342,9 @@ static int uxst_bind_listener(struct listener *listener, char *errmsg, int errle
 	listener->fd = fd;
 	listener->state = LI_LISTEN;
 
-	/* the function for the accept() event */
-	fdtab[fd].iocb = listener->proto->accept;
-	fdtab[fd].owner = listener; /* reference the listener instead of a task */
-	if (listener->bind_conf->bind_thread[relative_pid-1])
-		fd_insert(fd, listener->bind_conf->bind_thread[relative_pid-1]);
-	else
-		fd_insert(fd, MAX_THREADS_MASK);
+	fd_insert(fd, listener, listener->proto->accept,
+	          thread_mask(listener->bind_conf->bind_thread) & all_threads_mask);
+
 	return err;
 
  err_rename:
@@ -380,6 +382,9 @@ static int uxst_unbind_listener(struct listener *listener)
 /* Add <listener> to the list of unix stream listeners (port is ignored). The
  * listener's state is automatically updated from LI_INIT to LI_ASSIGNED.
  * The number of listeners for the protocol is updated.
+ *
+ * Must be called with proto_lock held.
+ *
  */
 static void uxst_add_listener(struct listener *listener, int port)
 {
@@ -410,7 +415,7 @@ static int uxst_pause_listener(struct listener *l)
 
 /*
  * This function initiates a UNIX connection establishment to the target assigned
- * to connection <conn> using (si->{target,addr.to}). The source address is ignored
+ * to connection <conn> using (si->{target,dst}). The source address is ignored
  * and will be selected by the system. conn->target may point either to a valid
  * server or to a backend, depending on conn->target. Only OBJ_TYPE_PROXY and
  * OBJ_TYPE_SERVER are supported. The <data> parameter is a boolean indicating
@@ -431,13 +436,11 @@ static int uxst_pause_listener(struct listener *l)
  * The connection's fd is inserted only when SF_ERR_NONE is returned, otherwise
  * it's invalid and the caller has nothing to do.
  */
-static int uxst_connect_server(struct connection *conn, int data, int delack)
+static int uxst_connect_server(struct connection *conn, int flags)
 {
 	int fd;
 	struct server *srv;
 	struct proxy *be;
-
-	conn->flags = 0;
 
 	switch (obj_type(conn->target)) {
 	case OBJ_TYPE_PROXY:
@@ -459,20 +462,20 @@ static int uxst_connect_server(struct connection *conn, int data, int delack)
 		if (errno == ENFILE) {
 			conn->err_code = CO_ER_SYS_FDLIM;
 			send_log(be, LOG_EMERG,
-				 "Proxy %s reached system FD limit at %d. Please check system tunables.\n",
-				 be->id, maxfd);
+				 "Proxy %s reached system FD limit (maxsock=%d). Please check system tunables.\n",
+				 be->id, global.maxsock);
 		}
 		else if (errno == EMFILE) {
 			conn->err_code = CO_ER_PROC_FDLIM;
 			send_log(be, LOG_EMERG,
-				 "Proxy %s reached process FD limit at %d. Please check 'ulimit-n' and restart.\n",
-				 be->id, maxfd);
+				 "Proxy %s reached process FD limit (maxsock=%d). Please check 'ulimit-n' and restart.\n",
+				 be->id, global.maxsock);
 		}
 		else if (errno == ENOBUFS || errno == ENOMEM) {
 			conn->err_code = CO_ER_SYS_MEMLIM;
 			send_log(be, LOG_EMERG,
-				 "Proxy %s reached system memory limit at %d sockets. Please check system tunables.\n",
-				 be->id, maxfd);
+				 "Proxy %s reached system memory limit (maxsock=%d). Please check system tunables.\n",
+				 be->id, global.maxsock);
 		}
 		else if (errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT) {
 			conn->err_code = CO_ER_NOPROTO;
@@ -504,8 +507,17 @@ static int uxst_connect_server(struct connection *conn, int data, int delack)
 		return SF_ERR_INTERNAL;
 	}
 
+	if (master == 1 && (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1)) {
+		ha_alert("Cannot set CLOEXEC on client socket.\n");
+		close(fd);
+		conn->err_code = CO_ER_SOCK_ERR;
+		conn->flags |= CO_FL_ERROR;
+		return SF_ERR_INTERNAL;
+	}
+
 	/* if a send_proxy is there, there are data */
-	data |= conn->send_proxy_ofs;
+	if (conn->send_proxy_ofs)
+		flags |= CONNECT_HAS_DATA;
 
 	if (global.tune.server_sndbuf)
                 setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &global.tune.server_sndbuf, sizeof(global.tune.server_sndbuf));
@@ -513,7 +525,7 @@ static int uxst_connect_server(struct connection *conn, int data, int delack)
 	if (global.tune.server_rcvbuf)
                 setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &global.tune.server_rcvbuf, sizeof(global.tune.server_rcvbuf));
 
-	if (connect(fd, (struct sockaddr *)&conn->addr.to, get_addr_len(&conn->addr.to)) == -1) {
+	if (connect(fd, (struct sockaddr *)conn->dst, get_addr_len(conn->dst)) == -1) {
 		if (errno == EINPROGRESS || errno == EALREADY) {
 			conn->flags |= CO_FL_WAIT_L4_CONN;
 		}
@@ -566,26 +578,16 @@ static int uxst_connect_server(struct connection *conn, int data, int delack)
 	conn_ctrl_init(conn);       /* registers the FD */
 	fdtab[fd].linger_risk = 0;  /* no need to disable lingering */
 
+	if (conn->flags & CO_FL_WAIT_L4_CONN)
+		fd_cant_recv(fd); // we'll change this once the connection is validated
+
 	if (conn_xprt_init(conn) < 0) {
 		conn_full_close(conn);
 		conn->flags |= CO_FL_ERROR;
 		return SF_ERR_RESOURCE;
 	}
 
-	if (conn->flags & (CO_FL_HANDSHAKE | CO_FL_WAIT_L4_CONN)) {
-		conn_sock_want_send(conn);  /* for connect status, proxy protocol or SSL */
-	}
-	else {
-		/* If there's no more handshake, we need to notify the data
-		 * layer when the connection is already OK otherwise we'll have
-		 * no other opportunity to do it later (eg: health checks).
-		 */
-		data = 1;
-	}
-
-	if (data)
-		conn_xprt_want_send(conn);  /* prepare to send data if any */
-
+	conn_xprt_want_send(conn);  /* for connect status, proxy protocol or SSL */
 	return SF_ERR_NONE;  /* connection is OK */
 }
 
@@ -600,6 +602,8 @@ static int uxst_connect_server(struct connection *conn, int data, int delack)
  * The sockets will be registered but not added to any fd_set, in order not to
  * loose them across the fork(). A call to uxst_enable_listeners() is needed
  * to complete initialization.
+ *
+ * Must be called with proto_lock held.
  *
  * The return value is composed from ERR_NONE, ERR_RETRYABLE and ERR_FATAL.
  */
@@ -620,6 +624,9 @@ static int uxst_bind_listeners(struct protocol *proto, char *errmsg, int errlen)
 /* This function stops all listening UNIX sockets bound to the protocol
  * <proto>. It does not detaches them from the protocol.
  * It always returns ERR_NONE.
+ *
+ * Must be called with proto_lock held.
+ *
  */
 static int uxst_unbind_listeners(struct protocol *proto)
 {
@@ -725,17 +732,7 @@ static struct bind_kw_list bind_kws = { "UNIX", { }, {
 	{ NULL, NULL, 0 },
 }};
 
-/********************************
- * 4) high-level functions
- ********************************/
-
-__attribute__((constructor))
-static void __uxst_protocol_init(void)
-{
-	protocol_register(&proto_unix);
-	bind_register_keywords(&bind_kws);
-}
-
+INITCALL1(STG_REGISTER, bind_register_keywords, &bind_kws);
 
 /*
  * Local variables:
